@@ -32,27 +32,63 @@ function bv_sdv_db(): PDO {
     foreach (['pdo','db','conn','connection'] as $n) { if (isset($GLOBALS[$n]) && $GLOBALS[$n] instanceof PDO) return $pdo = $GLOBALS[$n]; }
     http_response_code(500); exit('PDO connection not available.');
 }
+function bv_sdv_safe_filename_ascii(string $filename, string $fallback): string {
+    $ext = pathinfo($filename, PATHINFO_EXTENSION);
+    $base = pathinfo($filename, PATHINFO_FILENAME);
+    $base = preg_replace('/[^A-Za-z0-9._-]+/', '_', $base);
+    $base = trim((string)$base, '._-');
+    if ($base === '') {
+        $base = $fallback;
+    }
+    $safe = $base;
+    if ($ext !== '') {
+        $safe .= '.' . preg_replace('/[^A-Za-z0-9]+/', '', $ext);
+    }
+    return $safe;
+}
+function bv_sdv_guess_extension(string $mime, string $path): string {
+    $ext = strtolower((string)pathinfo($path, PATHINFO_EXTENSION));
+    if ($ext !== '') return $ext;
+    $map = ['application/pdf' => 'pdf', 'image/jpeg' => 'jpg', 'image/png' => 'png', 'image/gif' => 'gif', 'image/webp' => 'webp'];
+    return $map[strtolower($mime)] ?? '';
+}
 function bv_sdv_resolve_path(string $storagePath): ?string {
     $storagePath = trim($storagePath);
-    if ($storagePath === '' || str_contains($storagePath, "\0") || preg_match('#(^|/|\\\\)\.\.(/|\\\\|$)#', $storagePath)) {
+    if ($storagePath === '' || str_contains($storagePath, "\0") || str_contains($storagePath, '../') || str_contains($storagePath, '..\\') || preg_match('#(^|/|\\\\)\.\.(/|\\\\|$)#', $storagePath)) {
         return null;
     }
+
     $normalized = str_replace('\\', '/', $storagePath);
+    $root = dirname(__DIR__, 2);
+    $publicRoot = $root . '/public_html';
+    $bases = [$root, $root . '/uploads', $publicRoot, $publicRoot . '/uploads'];
+
+    $absoluteInput = preg_match('#^(?:[A-Za-z]:[\\/]|/)#', $normalized) === 1;
+    if ($absoluteInput) {
+        $resolvedAbs = realpath($normalized);
+        if ($resolvedAbs === false || !is_file($resolvedAbs)) {
+            return null;
+        }
+        foreach ($bases as $base) {
+            $baseReal = realpath($base);
+            if ($baseReal !== false && str_starts_with($resolvedAbs, rtrim($baseReal, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR)) {
+                return $resolvedAbs;
+            }
+        }
+        return null;
+    }
+
     $normalized = ltrim($normalized, '/');
     if (str_starts_with($normalized, 'uploads/')) {
         $normalized = substr($normalized, 8);
     }
-
-    $root = dirname(__DIR__, 2);
-    $publicRoot = $root . '/public_html';
-    $bases = [$publicRoot . '/uploads', $publicRoot, $root . '/uploads'];
 
     foreach ($bases as $base) {
         $baseReal = realpath($base);
         if ($baseReal === false) continue;
         $candidate = $baseReal . '/' . $normalized;
         $resolved = realpath($candidate);
-        if ($resolved !== false && is_file($resolved) && str_starts_with($resolved, $baseReal . DIRECTORY_SEPARATOR)) {
+        if ($resolved !== false && is_file($resolved) && str_starts_with($resolved, rtrim($baseReal, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR)) {
             return $resolved;
         }
     }
@@ -72,20 +108,31 @@ $doc = $stmt->fetch(PDO::FETCH_ASSOC);
 if (!$doc) { http_response_code(404); exit('Document not found.'); }
 
 $filePath = bv_sdv_resolve_path((string)($doc['storage_path'] ?? ''));
-if ($filePath === null) { http_response_code(404); exit('Document file not found or invalid path.'); }
+if ($filePath === null) { http_response_code(404); exit('Document file not found.'); }
 
 $mime = strtolower((string)($doc['mime_type'] ?? 'application/octet-stream'));
 $isImage = str_starts_with($mime, 'image/');
 $isPdf = ($mime === 'application/pdf');
 
+$originalName = trim((string)($doc['original_name'] ?? ''));
+if ($originalName === '') {
+    $ext = bv_sdv_guess_extension($mime, $filePath);
+    $base = trim((string)($doc['document_type'] ?? 'seller-document'));
+    if ($base === '') {
+        $base = 'seller-document';
+    }
+    $fallback = $base . '-' . (int)$docId;
+    $originalName = $fallback . ($ext !== '' ? ('.' . $ext) : '');
+}
+$asciiFallback = bv_sdv_safe_filename_ascii($originalName, 'seller-document-' . (int)$docId);
+
 if (isset($_GET['download']) && $_GET['download'] === '1') {
     header('Content-Type: application/octet-stream');
-    header('Content-Disposition: attachment; filename="' . rawurlencode((string)($doc['original_name'] ?? ('document_' . $docId))) . '"');
+    header('Content-Disposition: attachment; filename="' . str_replace('"', '', $asciiFallback) . '"; filename*=UTF-8\'\'' . rawurlencode($originalName));
     header('Content-Length: ' . (string)filesize($filePath));
     readfile($filePath);
     exit;
 }
-
 
 if (isset($_GET['stream']) && $_GET['stream'] === '1') {
     if (!$isImage && !$isPdf) {
@@ -103,6 +150,7 @@ if (isset($_GET['stream']) && $_GET['stream'] === '1') {
 </head><body><div class="container"><div class="card">
 <h2>Seller Document</h2>
 <div class="kv"><div>Document Label</div><div><?php echo bv_sdv_h($doc['document_label'] ?? '-'); ?></div></div>
+<div class="kv"><div>Document Type</div><div><?php echo bv_sdv_h($doc['document_type'] ?? '-'); ?></div></div>
 <div class="kv"><div>Original Name</div><div><?php echo bv_sdv_h($doc['original_name'] ?? '-'); ?></div></div>
 <div class="kv"><div>MIME Type</div><div><?php echo bv_sdv_h($doc['mime_type'] ?? '-'); ?></div></div>
 <div class="kv"><div>Uploaded At</div><div><?php echo bv_sdv_h((string)($doc['uploaded_at'] ?? '-')); ?></div></div>

@@ -200,6 +200,9 @@ if (!bv_sah_table_exists($pdo, 'seller_applications')) {
     exit('seller_applications table not found.');
 }
 
+$hasSellerDocuments = bv_sah_table_exists($pdo, 'seller_documents');
+$hasStatusHistory = bv_sah_table_exists($pdo, 'seller_application_status_history');
+
 $summary = [
     'total' => 0,
     'submitted' => 0,
@@ -246,36 +249,57 @@ input,select{padding:8px;border:1px solid #d1d5db;border-radius:6px}
 <?php foreach ($summary as $k => $v): ?><div class="sum"><strong><?php echo bv_sah_h(ucwords(str_replace('_', ' ', $k))); ?></strong><br><?php echo (int)$v; ?></div><?php endforeach; ?>
 </div></div>
 <?php if ($detailId > 0):
-    $appStmt = $pdo->prepare('SELECT sa.*, u.* FROM seller_applications sa LEFT JOIN users u ON u.id = sa.user_id WHERE sa.id = ? LIMIT 1');
+    $appStmt = $pdo->prepare('SELECT sa.*, sa.id AS application_id, sa.user_id AS application_user_id, u.id AS applicant_user_id, u.email AS applicant_email, u.first_name AS applicant_first_name, u.last_name AS applicant_last_name, u.phone AS applicant_phone, u.role AS applicant_role FROM seller_applications sa LEFT JOIN users u ON u.id = sa.user_id WHERE sa.id = ? LIMIT 1');
     $appStmt->execute([$detailId]);
     $app = $appStmt->fetch(PDO::FETCH_ASSOC);
     if (!$app): ?>
         <div class="card">Application not found. <a class="btn light" href="<?php echo bv_sah_h(bv_sah_build_url(['id' => null])); ?>">Back</a></div>
     <?php else:
-        $docStmt = $pdo->prepare('SELECT * FROM seller_documents WHERE application_id = ? ORDER BY uploaded_at DESC, id DESC');
-        $docStmt->execute([$detailId]);
-        $docs = $docStmt->fetchAll(PDO::FETCH_ASSOC);
+        $docs = [];
+        $docsMessage = '';
+        if ($hasSellerDocuments) {
+            $docStmt = $pdo->prepare('SELECT * FROM seller_documents WHERE application_id = ? ORDER BY uploaded_at DESC, id DESC');
+            $docStmt->execute([(int)$app['application_id']]);
+            $docs = $docStmt->fetchAll(PDO::FETCH_ASSOC);
+        } else {
+            $docsMessage = 'No document table found.';
+        }
 
         $history = [];
-        if (bv_sah_table_exists($pdo, 'seller_application_status_history')) {
-            $hCols = bv_sah_columns($pdo, 'seller_application_status_history');
-            $timeCol = in_array('created_at', $hCols, true) ? 'created_at' : (in_array('changed_at', $hCols, true) ? 'changed_at' : 'id');
-            $hs = $pdo->prepare('SELECT * FROM seller_application_status_history WHERE application_id = ? ORDER BY ' . $timeCol . ' DESC, id DESC');
-            $hs->execute([$detailId]);
-            $history = $hs->fetchAll(PDO::FETCH_ASSOC);
+        $historyMessage = '';
+        $historyCols = [];
+        if ($hasStatusHistory) {
+            $historyCols = bv_sah_columns($pdo, 'seller_application_status_history');
+            $timePref = ['created_at', 'changed_at', 'updated_at', 'id'];
+            $timeCol = 'id';
+            foreach ($timePref as $tc) {
+                if (in_array($tc, $historyCols, true)) {
+                    $timeCol = $tc;
+                    break;
+                }
+            }
+            $appRefCol = in_array('application_id', $historyCols, true) ? 'application_id' : (in_array('seller_application_id', $historyCols, true) ? 'seller_application_id' : '');
+            if ($appRefCol !== '') {
+                $orderSql = in_array('id', $historyCols, true) ? ($timeCol . ' DESC, id DESC') : ($timeCol . ' DESC');
+                $hs = $pdo->prepare('SELECT * FROM seller_application_status_history WHERE ' . $appRefCol . ' = ? ORDER BY ' . $orderSql);
+                $hs->execute([(int)$app['application_id']]);
+                $history = $hs->fetchAll(PDO::FETCH_ASSOC);
+            }
+        } else {
+            $historyMessage = 'No status history table found.';
         }
         ?>
         <div class="card"><a class="btn light" href="<?php echo bv_sah_h(bv_sah_build_url(['id' => null])); ?>">&larr; Back</a></div>
         <div class="card"><h3>A. Applicant Profile</h3>
-            <div class="kv"><div>User ID</div><div><?php echo (int)($app['user_id'] ?? 0); ?></div></div>
-            <div class="kv"><div>First Name</div><div><?php echo bv_sah_h($app['first_name'] ?? '-'); ?></div></div>
-            <div class="kv"><div>Last Name</div><div><?php echo bv_sah_h($app['last_name'] ?? '-'); ?></div></div>
-            <div class="kv"><div>Email</div><div><?php echo bv_sah_h($app['email'] ?? '-'); ?></div></div>
-            <div class="kv"><div>Phone</div><div><?php echo bv_sah_h($app['phone'] ?? '-'); ?></div></div>
-            <div class="kv"><div>Role</div><div><?php echo bv_sah_h($app['role'] ?? '-'); ?></div></div>
+            <div class="kv"><div>User ID</div><div><?php echo (int)($app['applicant_user_id'] ?? 0); ?></div></div>
+            <div class="kv"><div>First Name</div><div><?php echo bv_sah_h($app['applicant_first_name'] ?? '-'); ?></div></div>
+            <div class="kv"><div>Last Name</div><div><?php echo bv_sah_h($app['applicant_last_name'] ?? '-'); ?></div></div>
+            <div class="kv"><div>Email</div><div><?php echo bv_sah_h($app['applicant_email'] ?? '-'); ?></div></div>
+            <div class="kv"><div>Phone</div><div><?php echo bv_sah_h($app['applicant_phone'] ?? '-'); ?></div></div>
+            <div class="kv"><div>Role</div><div><?php echo bv_sah_h($app['applicant_role'] ?? '-'); ?></div></div>
         </div>
         <div class="card"><h3>B. Seller Application</h3>
-            <div class="kv"><div>Application ID</div><div><?php echo (int)$app['id']; ?></div></div>
+            <div class="kv"><div>Application ID</div><div><?php echo (int)$app['application_id']; ?></div></div>
             <div class="kv"><div>Status</div><div><?php echo bv_sah_status_badge($app['application_status'] ?? ''); ?></div></div>
             <div class="kv"><div>Farm Name</div><div><?php echo bv_sah_h($app['farm_name'] ?? '-'); ?></div></div>
             <div class="kv"><div>Farm Phone</div><div><?php echo bv_sah_h($app['farm_phone'] ?? '-'); ?></div></div>
@@ -317,7 +341,7 @@ input,select{padding:8px;border:1px solid #d1d5db;border-radius:6px}
         </div>
         <div class="card"><h3>I. Attached Documents</h3>
             <table><thead><tr><th>Label</th><th>Type</th><th>Original Name</th><th>MIME</th><th>Size</th><th>Uploaded</th><th>Action</th></tr></thead><tbody>
-            <?php if (!$docs): ?><tr><td colspan="7">No documents.</td></tr><?php else: foreach ($docs as $d): ?>
+            <?php if ($docsMessage !== ''): ?><tr><td colspan="7"><?php echo bv_sah_h($docsMessage); ?></td></tr><?php elseif (!$docs): ?><tr><td colspan="7">No documents.</td></tr><?php else: foreach ($docs as $d): ?>
                 <tr>
                     <td><?php echo bv_sah_h($d['document_label'] ?? '-'); ?></td>
                     <td><?php echo bv_sah_h($d['document_type'] ?? '-'); ?></td>
@@ -332,14 +356,17 @@ input,select{padding:8px;border:1px solid #d1d5db;border-radius:6px}
         </div>
         <div class="card"><h3>J. Status History</h3>
             <table><thead><tr><th>Old</th><th>New</th><th>Changed By</th><th>Note/Reason</th><th>Changed At</th></tr></thead><tbody>
-            <?php if (!$history): ?><tr><td colspan="5">No status history.</td></tr><?php else: foreach ($history as $h):
-                $note = $h['note'] ?? ($h['reason'] ?? ($h['change_note'] ?? '-'));
+            <?php if ($historyMessage !== ''): ?><tr><td colspan="5"><?php echo bv_sah_h($historyMessage); ?></td></tr><?php elseif (!$history): ?><tr><td colspan="5">No status history.</td></tr><?php else: foreach ($history as $h):
+                $oldStatus = $h['old_status'] ?? ($h['previous_status'] ?? ($h['from_status'] ?? '-'));
+                $newStatus = $h['new_status'] ?? ($h['status'] ?? '-');
+                $changedBy = $h['changed_by'] ?? ($h['changed_by_user_id'] ?? ($h['reviewed_by'] ?? '-'));
+                $note = $h['note'] ?? ($h['reason'] ?? ($h['admin_note'] ?? '-'));
                 $changedAt = $h['created_at'] ?? ($h['changed_at'] ?? ($h['updated_at'] ?? null));
                 ?>
                 <tr>
-                    <td><?php echo bv_sah_h($h['old_status'] ?? '-'); ?></td>
-                    <td><?php echo bv_sah_h($h['new_status'] ?? '-'); ?></td>
-                    <td><?php echo bv_sah_h((string)($h['changed_by'] ?? ($h['updated_by'] ?? '-'))); ?></td>
+                    <td><?php echo bv_sah_h($oldStatus); ?></td>
+                    <td><?php echo bv_sah_h($newStatus); ?></td>
+                    <td><?php echo bv_sah_h((string)$changedBy); ?></td>
                     <td><?php echo bv_sah_h($note); ?></td>
                     <td><?php echo bv_sah_h(bv_sah_format_date($changedAt)); ?></td>
                 </tr>
@@ -372,9 +399,10 @@ input,select{padding:8px;border:1px solid #d1d5db;border-radius:6px}
     $totalPages = max(1, (int)ceil($totalRows / $perPage));
     if ($page > $totalPages) { $page = $totalPages; $offset = ($page - 1) * $perPage; }
 
-    $sql = 'SELECT sa.id, sa.user_id, sa.farm_name, sa.farm_phone, sa.application_status, sa.submitted_at, sa.reviewed_at,
-                   u.first_name, u.last_name, u.email,
-                   (SELECT COUNT(*) FROM seller_documents sd WHERE sd.application_id = sa.id) AS documents_count
+    $docsCountSql = $hasSellerDocuments ? '(SELECT COUNT(*) FROM seller_documents sd WHERE sd.application_id = sa.id)' : '0';
+    $sql = 'SELECT sa.id AS application_id, sa.user_id AS application_user_id, sa.farm_name, sa.farm_phone, sa.application_status, sa.submitted_at, sa.reviewed_at,
+                   u.id AS applicant_user_id, u.email AS applicant_email, u.first_name AS applicant_first_name, u.last_name AS applicant_last_name, u.phone AS applicant_phone, u.role AS applicant_role,
+                   ' . $docsCountSql . ' AS documents_count
             FROM seller_applications sa
             LEFT JOIN users u ON u.id = sa.user_id' . $whereSql . '
             ORDER BY sa.id DESC LIMIT ' . (int)$perPage . ' OFFSET ' . (int)$offset;
@@ -392,16 +420,16 @@ input,select{padding:8px;border:1px solid #d1d5db;border-radius:6px}
 <div class="card"><table><thead><tr><th>Application ID</th><th>Farm Name</th><th>Applicant Name</th><th>Email</th><th>Phone</th><th>Status</th><th>Submitted At</th><th>Reviewed At</th><th>Documents Count</th><th>Action</th></tr></thead><tbody>
 <?php if (!$apps): ?><tr><td colspan="10">No applications found.</td></tr><?php else: foreach ($apps as $a): ?>
 <tr>
-<td><?php echo (int)$a['id']; ?></td>
+<td><?php echo (int)$a['application_id']; ?></td>
 <td><?php echo bv_sah_h($a['farm_name'] ?? '-'); ?></td>
-<td><?php echo bv_sah_h(trim((string)($a['first_name'] ?? '') . ' ' . (string)($a['last_name'] ?? '')) ?: '-'); ?></td>
-<td><?php echo bv_sah_h($a['email'] ?? '-'); ?></td>
+<td><?php echo bv_sah_h(trim((string)($a['applicant_first_name'] ?? '') . ' ' . (string)($a['applicant_last_name'] ?? '')) ?: '-'); ?></td>
+<td><?php echo bv_sah_h($a['applicant_email'] ?? '-'); ?></td>
 <td><?php echo bv_sah_h($a['farm_phone'] ?? '-'); ?></td>
 <td><?php echo bv_sah_status_badge($a['application_status'] ?? ''); ?></td>
 <td><?php echo bv_sah_h(bv_sah_format_date($a['submitted_at'] ?? null)); ?></td>
 <td><?php echo bv_sah_h(bv_sah_format_date($a['reviewed_at'] ?? null)); ?></td>
 <td><?php echo (int)($a['documents_count'] ?? 0); ?></td>
-<td><a class="btn" href="<?php echo bv_sah_h(bv_sah_build_url(['id' => (int)$a['id'], 'page' => null])); ?>">View</a></td>
+<td><a class="btn" href="<?php echo bv_sah_h(bv_sah_build_url(['id' => (int)$a['application_id'], 'page' => null])); ?>">View</a></td>
 </tr>
 <?php endforeach; endif; ?>
 </tbody></table>
@@ -414,3 +442,8 @@ input,select{padding:8px;border:1px solid #d1d5db;border-radius:6px}
 <?php endif; ?>
 </div>
 </body></html>
+seller_document_view.php
+seller_document_view.php
++168
+-120
+
